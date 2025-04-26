@@ -78,6 +78,57 @@ chip8offset =	$2600
 	com
 	ENDM
 
+;===================;
+; Stack Handling    ;
+;===================;
+
+; Push a value onto the stack
+pushStack:
+	lisu 4
+	lisl 7
+	lr a, s               ; Load stack pointer
+	ci $FF                ; Check for stack overflow
+	bz .stackOverflow
+	inc                   ; Increment stack pointer
+	lr s, a
+	lr is, a              ; Update ISAR
+	st                    ; Store value at stack pointer
+	pop
+.stackOverflow:
+	; Handle stack overflow (e.g., halt or reset)
+	; Modify as needed for your platform
+	jmp fetchDecodeLoop
+
+; Pop a value from the stack
+popStack:
+	lisu 4
+	lisl 7
+	lr a, s               ; Load stack pointer
+	ci $00                ; Check for stack underflow
+	bz .stackUnderflow
+	lm                    ; Load value from stack pointer
+	dec                   ; Decrement stack pointer
+	lr s, a
+	lr is, a              ; Update ISAR
+	pop
+.stackUnderflow:
+	; Handle stack underflow (e.g., halt or reset)
+	; Modify as needed for your platform
+	jmp fetchDecodeLoop
+
+;===================;
+; Stack Optimization ;
+;===================;
+
+; Initialize stack pointer to the bottom of the stack
+initStack:
+	lisu 4
+	lisl 7
+	li $01                ; Start stack pointer at 1 (no wasted space)
+	lr s, a
+	lr is, a              ; Update ISAR
+	pop
+
 ;---------------;
 ; Program Entry ;
 ;---------------;
@@ -93,6 +144,7 @@ cartridgeEntry:
 	outs	4
 	outs	5
 	outs	0
+	pi initStack          ; Initialize stack pointer
                 
 	lisu	4			; r32 = complement flag
 	lisl	0
@@ -584,8 +636,15 @@ firstDigitB:
 	jmp fetchDecodeLoop
 	
 firstDigitC:
-	jmp firstDigitSix
-	;jmp fetchDecodeLoop
+	pi getX
+	li $FF                ; Load maximum random value
+	pi random             ; Call random number generator
+	lr a, s               ; Get random number
+	lr 0, a               ; Store in scratch
+	lr a, 2               ; Load NN
+	ns 0                  ; AND random number with NN
+	lr s, a               ; Store result in VX
+	jmp fetchDecodeLoop
 
 firstDigitD:
 	pi getX
@@ -780,12 +839,26 @@ firstDigitE:
 	bnz .exa1
 	jmp fetchDecodeLoop
 .ex9e:
+	pi getX
+	lr a, s               ; Load VX
+	pi isKeyPressed       ; Check if key is pressed
+	bz .skip              ; Skip if not pressed
+	lr dc, h              ; Load PC
+	lm
+	lm                    ; Skip next instruction
+	lr h, dc
+.skip:
 	jmp fetchDecodeLoop
 .exa1:
-	lr dc, h
+	pi getX
+	lr a, s               ; Load VX
+	pi isKeyPressed       ; Check if key is pressed
+	bnz .skip             ; Skip if pressed
+	lr dc, h              ; Load PC
 	lm
-	lm
+	lm                    ; Skip next instruction
 	lr h, dc
+.skip:
 	jmp fetchDecodeLoop
 	
 firstDigitF:
@@ -839,21 +912,29 @@ firstDigitF:
 	jmp fetchDecodeLoop
 
 .lastNibble07:
+	pi getX
+	pi getDelayTimer      ; Get delay timer value
+	lr s, a               ; Store in VX
 	jmp fetchDecodeLoop
 
 .lastNibble0A:
-	; decrement PC by 2
-	lr dc, h
-	li $fe
-	adc
-	lr h, dc
-
+	pi getX
+.waitKey:
+	pi getKey             ; Wait for key press
+	bz .waitKey           ; Loop until a key is pressed
+	lr s, a               ; Store key in VX
 	jmp fetchDecodeLoop
 	
 .lastNibble15:
+	pi getX
+	lr a, s               ; Load VX
+	pi setDelayTimer      ; Set delay timer
 	jmp fetchDecodeLoop
 
 .lastNibble18:
+	pi getX
+	lr a, s               ; Load VX
+	pi setSoundTimer      ; Set sound timer
 	jmp fetchDecodeLoop
 
 .lastNibble1E:
@@ -1086,6 +1167,128 @@ getY:
 	oi $10
 	lr is, a
 	pop
+
+;===================;
+; Helper Subroutines ;
+;===================;
+
+; Random number generator (returns random number in A)
+random:
+	; Implement a simple random number generator
+	; Modify as needed for your platform
+	li $3C                ; Example seed
+	xi $A7
+	ns 0
+	pop
+
+; Check if a key is pressed (returns 1 if pressed, 0 otherwise in A)
+isKeyPressed:
+	; Implement key press check
+	; Modify as needed for your platform
+	clr
+	pop
+
+; Wait for a key press (returns key value in A)
+getKey:
+	; Implement key press wait
+	; Modify as needed for your platform
+	clr
+	pop
+
+; Get the delay timer value (returns value in A)
+getDelayTimer:
+	; Implement delay timer retrieval
+	; Modify as needed for your platform
+	clr
+	pop
+
+; Set the delay timer
+setDelayTimer:
+	; Implement delay timer setting
+	; Modify as needed for your platform
+	pop
+
+; Set the sound timer
+setSoundTimer:
+	; Implement sound timer setting
+	; Modify as needed for your platform
+	pop
+
+;===================;
+; Optimized Blit    ;
+;===================;
+
+; Optimized blit routine for drawing sprites
+; This routine avoids reinitializing the hardware for each row
+; and focuses only on the affected area of the screen.
+
+optimizedBlit:
+	; r1 = color 1 (off)
+	; r2 = color 2 (on)
+	; r3 = x position
+	; r4 = y position
+	; r5 = width
+	; r6 = height (and vertical counter)
+	; r7 = horizontal counter
+	; r8 = graphics byte
+	; r9 = bit counter
+	; DC = pointer to graphics
+
+	; Set up initial screen position
+	lr a, 4               ; Load Y position
+	sl 1                  ; Multiply by 4
+	sl 1
+	sl 1
+	as 3                  ; Add X position
+	lr ql, a              ; Store in QL
+	li $2f                ; Screen buffer base
+	lr qu, a
+	lr dc, q              ; Set DC to screen buffer position
+
+	; Load sprite height into vertical counter
+	lr a, 6
+	lr 9, a
+
+.nextRow:
+	; Check if all rows are drawn
+	ns 9
+	bz .done
+
+	; Load next graphics byte
+	lm
+	lr 8, a               ; Store graphics byte in r8
+
+	; Draw the row
+	lr a, 5               ; Load width into horizontal counter
+	lr 7, a
+.nextColumn:
+	; Check if all columns are drawn
+	ns 7
+	bz .nextRowSetup
+
+	; Shift graphics byte and determine color
+	lr a, 8
+	as 8
+	lr 8, a
+	lr a, 2               ; Default to color 1 (off)
+	bc .drawPixel
+	lr a, 1               ; Use color 2 (on)
+.drawPixel:
+	st                    ; Store pixel in screen buffer
+	inc                   ; Move to next column
+	jmp .nextColumn
+
+.nextRowSetup:
+	; Move to the next row in the screen buffer
+	li 64                 ; Screen width
+	as 3
+	lr a, ql
+	as 3
+	lr ql, a
+	jmp .nextRow
+
+.done:
+	pop                   ; Return from subroutine
 
 font:
 	; 0
